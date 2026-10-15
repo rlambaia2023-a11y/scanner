@@ -55,7 +55,7 @@ def abrir_imagem(caminho):
             import pillow_heif
             pillow_heif.register_heif_opener()
         except ImportError:
-            sys.exit("Para fotos .heic do iPhone: pip install pillow-heif")
+            raise ErroScanner("Para fotos .heic do iPhone: pip install pillow-heif")
     img = Image.open(caminho)
     data = None
     try:
@@ -205,7 +205,7 @@ def corrigir_rotacao(img, tmpdir):
 RE_PAGINA = re.compile(r"(?:p[áa]g(?:ina)?\.?\s*(\d{1,3})(?:\s*(?:de|/)\s*\d{1,3})?)"
                        r"|(?:^\s*(\d{1,3})\s*/\s*\d{1,3}\s*$)", re.I | re.M)
 # início de linha: "3- Dentro", "4) O estudo", "Questão 5 - Em"... (até 3 sujeirinhas antes)
-RE_QUESTAO = re.compile(r"^\W{0,3}\w?\W{0,2}(?:quest[ãa]o\s*)?(\d{1,3})\s*[-–—.)]\s*[A-ZÀ-Ú\"“(]",
+RE_QUESTAO = re.compile(r"^\W{0,3}(?:[^\W\d]\W{1,2})?(?:quest[ãa]o\s*)?(\d{1,3})\s*[-–—.)]\s*[A-ZÀ-Ú\"“(]",
                         re.I | re.M)
 
 # --psm 4 = "uma coluna de texto de tamanhos variados". Em provas lê os
@@ -231,19 +231,22 @@ def chave_da_pagina(texto):
     return None
 
 
-def ordenar(paginas):
+def ordenar(paginas, usar_exif=True):
     """Ordem base = data da foto (EXIF) ou nome do arquivo.
     Se as páginas tiverem número de página ou de questão, reordena por isso;
     páginas sem pista ficam logo depois da vizinha que veio antes delas."""
     def natural(s):
         return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
 
-    base = sorted(paginas, key=lambda p: (p["data"] or datetime.max, natural(p["nome"])))
+    if usar_exif:
+        base = sorted(paginas, key=lambda p: (p["data"] or datetime.max, natural(p["nome"])))
+    else:
+        base = sorted(paginas, key=lambda p: natural(p["nome"]))
     usa_pagina = sum(1 for p in base if p["chave"] and p["chave"][0] == "pagina") >= len(base) / 2
     ultima = -1.0
     for p in base:
         k = p["chave"]
-        if k and (k[0] == "pagina") == usa_pagina or (k and k[0] == "capa"):
+        if k and ((k[0] == "pagina") == usa_pagina or k[0] == "capa"):
             p["ordem"] = float(k[1])
         else:
             p["ordem"] = ultima + 0.001  # sem pista: gruda na anterior
@@ -252,12 +255,20 @@ def ordenar(paginas):
 
 
 # ------------------------------------------------------------- principal
-def processar(entradas, saida, dpi=200, qualidade=70, cor=False, ordenar_auto=True):
+class ErroScanner(Exception):
+    """Problema que impede gerar o PDF (sem Tesseract, sem imagens...)."""
+
+
+def processar(entradas, saida, dpi=200, qualidade=70, cor=False, ordenar_auto=True, usar_exif=True,
+              silencioso=False):
+    """Gera o PDF e o .txt. ``usar_exif=False`` usa a ordem dos nomes dos arquivos como base
+    (o bot nomeia as fotos pela ordem de envio). Devolve a lista de páginas na ordem final."""
     if not shutil.which("tesseract"):
-        sys.exit("Tesseract não encontrado. Veja o LEIAME.md para instalar.")
+        raise ErroScanner("Tesseract não encontrado. Veja o LEIAME.md para instalar.")
     arquivos = listar_imagens(entradas)
     if not arquivos:
-        sys.exit("Nenhuma imagem encontrada.")
+        raise ErroScanner("Nenhuma imagem encontrada.")
+    log = (lambda *a, **k: None) if silencioso else print
 
     largura = int(round(210 / 25.4 * dpi))  # largura A4 na resolução pedida
     tmp = tempfile.mkdtemp(prefix="scan_")
@@ -290,11 +301,11 @@ def processar(entradas, saida, dpi=200, qualidade=70, cor=False, ordenar_auto=Tr
         chave = chave_da_pagina(texto) if ordenar_auto else None
         paginas.append({"nome": os.path.basename(arq), "data": data, "pdf": saida_pg + ".pdf",
                         "texto": texto, "chave": chave, "recorte": recorte})
-        print(f"  [{i + 1}/{len(arquivos)}] {os.path.basename(arq)}: recorte {recorte}; "
+        log(f"  [{i + 1}/{len(arquivos)}] {os.path.basename(arq)}: recorte {recorte}; "
               f"pista de ordem = {chave}")
 
     if ordenar_auto:
-        paginas = ordenar(paginas)
+        paginas = ordenar(paginas, usar_exif)
 
     # junta as páginas na ordem final
     from pypdf import PdfWriter
@@ -316,8 +327,8 @@ def processar(entradas, saida, dpi=200, qualidade=70, cor=False, ordenar_auto=Tr
 
     shutil.rmtree(tmp, ignore_errors=True)
     kb = os.path.getsize(saida) / 1024
-    print(f"\nOrdem final: {[p['nome'] for p in paginas]}")
-    print(f"PDF: {saida} ({kb:.0f} KB, {len(paginas)} pág.)  |  Texto: {base}.txt")
+    log(f"\nOrdem final: {[p['nome'] for p in paginas]}")
+    log(f"PDF: {saida} ({kb:.0f} KB, {len(paginas)} pág.)  |  Texto: {base}.txt")
     return paginas
 
 
@@ -330,4 +341,7 @@ if __name__ == "__main__":
     ap.add_argument("--cor", action="store_true")
     ap.add_argument("--sem-ordenar", action="store_true")
     a = ap.parse_args()
-    processar(a.entradas, a.saida, a.dpi, a.qualidade, a.cor, not a.sem_ordenar)
+    try:
+        processar(a.entradas, a.saida, a.dpi, a.qualidade, a.cor, not a.sem_ordenar)
+    except ErroScanner as e:
+        sys.exit(str(e))

@@ -2,5 +2,5 @@ opencv-python-headless>=4.8
 numpy>=1.24
 Pillow>=10.0
 pypdf>=4.3
-# opcional, para fotos .heic do iPhone:
-# pillow-heif
+requests>=2.31
+pillow-heif>=0.16
