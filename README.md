@@ -10,6 +10,7 @@ Só ferramentas gratuitas: Python, OpenCV, Pillow, pypdf e Tesseract (português
 1. Mande as fotos das páginas, em qualquer ordem. Pode ser em álbum ou como arquivo (📎 › Arquivo, fica com mais qualidade).
 2. Mande **pronto**, ou só espere 30 segundos.
 3. O bot responde com `prova_AAAA-MM-DD_HHMM.pdf` e `.txt`.
+4. Logo abaixo vem o botão **📋 Copiar todo o texto** (e um por página). O texto chega no chat em bloco: um toque copia tudo. Textos muito longos vêm em partes, por causa do limite de 4.096 caracteres por mensagem do Telegram. O botão funciona por 24 h (variável `TEXTO_HORAS`) ou até o bot reiniciar.
 
 | Comando | O que faz |
 |---|---|
@@ -35,6 +36,7 @@ Variáveis opcionais:
 | `MAX_PAGINAS` | 40 | páginas por PDF |
 | `DPI` | 200 | 150 = menor, 300 = mais nítido |
 | `QUALIDADE` | 70 | qualidade do JPEG dentro do PDF (50–85) |
+| `TEXTO_HORAS` | 24 | por quanto tempo o botão de copiar texto funciona |
 
 ## Rodar no computador
 

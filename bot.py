@@ -16,6 +16,7 @@ Variáveis de ambiente:
   MAX_PAGINAS          opcional, padrão 40
   DPI, QUALIDADE       opcionais, padrão 200 e 70
 """
+import html
 import logging
 import os
 import queue
@@ -24,6 +25,8 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 import requests
@@ -40,6 +43,9 @@ MAX_PAGINAS = int(os.environ.get("MAX_PAGINAS", "40"))
 DPI = int(os.environ.get("DPI", "200"))
 QUALIDADE = int(os.environ.get("QUALIDADE", "70"))
 MAX_ARQUIVO = 20 * 1024 * 1024  # limite de download de arquivos de bots no Telegram
+TEXTO_HORAS = int(os.environ.get("TEXTO_HORAS", "24"))  # por quanto tempo o botão de copiar funciona
+MAX_TEXTOS = 200  # resultados guardados em memória para o botão de copiar
+BLOCO = 3000      # caracteres por mensagem (folga para o escape do HTML; limite do Telegram é 4096)
 
 PRONTO = {"pronto", "pronta", "/pronto", "/pdf", "pdf", "terminei", "fim", "ok pronto"}
 CANCELAR = {"/cancelar", "cancelar"}
@@ -54,7 +60,8 @@ INICIO = (
     "Dicas:\n"
     "• Folha inteira na foto, com um pouco de fundo aparecendo em volta.\n"
     "• Mandando como arquivo (📎 › Arquivo) a qualidade fica melhor.\n"
-    "• Correção com caneta colorida? Manda /cor antes das fotos.\n\n"
+    "• Correção com caneta colorida? Manda /cor antes das fotos.\n"
+    "• Depois do PDF aparece o botão 📋 Copiar texto: o texto vem aqui no chat, pronto para copiar.\n\n"
     "Comandos: /pronto, /cancelar, /cor, /pb, /ajuda"
 )
 PRIMEIRA_FOTO = "📄 Recebi. Pode mandar as outras páginas e depois “pronto”."
@@ -67,6 +74,11 @@ LIMITE = f"Chegou no limite de {MAX_PAGINAS} páginas por PDF. Manda “pronto�
 ERRO = ("😕 Não consegui montar o PDF dessa vez. Tenta mandar as fotos de novo daqui a pouco. "
         "Se continuar, manda como arquivo (📎 › Arquivo).")
 NAO_AUTORIZADO = "Este bot é de uso restrito."
+COPIAR_CONVITE = ("📋 Quer copiar o texto? Toque em “Copiar todo o texto” e eu mando aqui embaixo. "
+                  "Depois é só tocar no bloco que ele copia inteiro.")
+TEXTO_EXPIROU = ("Esse texto não está mais guardado (passou do prazo ou o bot reiniciou). "
+                 "Abre o .txt que mandei junto com o PDF, ou manda as fotos de novo.")
+SEM_TEXTO = "Não encontrei texto nessa página. Pode ser que a foto esteja escura ou tremida."
 
 
 def msg_processando(n, fila):
@@ -110,11 +122,25 @@ class Telegram:
             raise RuntimeError(f"{metodo}: {corpo.get('description')}")
         raise RuntimeError(f"{metodo}: sem resposta do Telegram")
 
-    def enviar(self, chat_id, texto):
+    def enviar(self, chat_id, texto, teclado=None, html_=False):
+        params = {"chat_id": chat_id, "text": texto[:4096]}
+        if teclado:
+            params["reply_markup"] = {"inline_keyboard": teclado}
+        if html_:
+            params["parse_mode"] = "HTML"
         try:
-            self.chamar("sendMessage", chat_id=chat_id, text=texto[:4096])
+            self.chamar("sendMessage", **params)
         except RuntimeError as e:
             log.error("não consegui enviar mensagem: %s", e)
+
+    def responder_botao(self, callback_id, texto=None):
+        params = {"callback_query_id": callback_id}
+        if texto:
+            params["text"] = texto[:200]
+        try:
+            self.chamar("answerCallbackQuery", **params)
+        except RuntimeError:
+            pass
 
     def enviar_arquivo(self, chat_id, nome, dados, mime, legenda=None):
         params = {"chat_id": str(chat_id)}
@@ -161,9 +187,13 @@ class Bot:
         self.cor = {}             # chat_id -> preferência de cor para o próximo lote
         self.trava = threading.Lock()
         self.fila = queue.Queue()
+        self.textos = OrderedDict()  # id curto -> {"chat", "paginas": [str], "quando"}
 
     # ---------------------------------------------------------- entrada
     def tratar(self, update):
+        if update.get("callback_query"):
+            self.tratar_botao(update["callback_query"])
+            return
         msg = update.get("message") or update.get("edited_message")
         if not msg:
             return
@@ -294,9 +324,74 @@ class Bot:
             self.tg.enviar_arquivo(chat_id, f"{nome}.pdf", pdf, "application/pdf",
                                    legenda=legenda(paginas, len(pdf), puladas))
             self.tg.enviar_arquivo(chat_id, f"{nome}.txt", txt, "text/plain")
+            self.oferecer_copia(chat_id, [p["texto"] for p in paginas])
         finally:
             tempfile.tempdir = antigo_tmp
             shutil.rmtree(pasta, ignore_errors=True)
+
+    # ------------------------------------------------------- copiar texto
+    def guardar_texto(self, chat_id, paginas):
+        tid = uuid.uuid4().hex[:10]
+        with self.trava:
+            self.textos[tid] = {"chat": chat_id, "paginas": paginas, "quando": time.monotonic()}
+            while len(self.textos) > MAX_TEXTOS:
+                self.textos.popitem(last=False)
+        return tid
+
+    def oferecer_copia(self, chat_id, paginas):
+        tid = self.guardar_texto(chat_id, paginas)
+        teclado = [[{"text": "📋 Copiar todo o texto", "callback_data": f"cp:{tid}:all"}]]
+        if len(paginas) > 1:
+            botoes = [{"text": f"Pág. {i}", "callback_data": f"cp:{tid}:{i}"}
+                      for i in range(1, min(len(paginas), 40) + 1)]
+            teclado += [botoes[i:i + 5] for i in range(0, len(botoes), 5)]
+        self.tg.enviar(chat_id, COPIAR_CONVITE, teclado=teclado)
+
+    def tratar_botao(self, cb):
+        chat_id = (cb.get("message") or {}).get("chat", {}).get("id")
+        partes = (cb.get("data") or "").split(":")
+        if chat_id is None or len(partes) != 3 or partes[0] != "cp":
+            self.tg.responder_botao(cb["id"])
+            return
+        _, tid, qual = partes
+        with self.trava:
+            item = self.textos.get(tid)
+        vencido = item and time.monotonic() - item["quando"] > TEXTO_HORAS * 3600
+        if not item or vencido or item["chat"] != chat_id:
+            self.tg.responder_botao(cb["id"], "Esse texto expirou")
+            self.tg.enviar(chat_id, TEXTO_EXPIROU)
+            return
+        paginas = item["paginas"]
+        if qual == "all":
+            escolhidas = list(enumerate(paginas, 1))
+        elif qual.isdigit() and 1 <= int(qual) <= len(paginas):
+            escolhidas = [(int(qual), paginas[int(qual) - 1])]
+        else:
+            self.tg.responder_botao(cb["id"])
+            return
+        self.tg.responder_botao(cb["id"], "Enviando o texto…")
+        if qual == "all":
+            # o .txt inteiro, juntando as páginas, no menor número de blocos possível
+            if len(paginas) > 1:
+                corpo = "\n\n".join(f"===== Página {n} =====\n{limpar_texto(t)}" for n, t in escolhidas)
+            else:
+                corpo = limpar_texto(paginas[0])
+            self.mandar_blocos(chat_id, "Texto completo", corpo)
+        else:
+            n, texto = escolhidas[0]
+            self.mandar_blocos(chat_id, f"Página {n}", limpar_texto(texto))
+
+    def mandar_blocos(self, chat_id, titulo, texto):
+        blocos = dividir(texto)
+        if not blocos:
+            self.tg.enviar(chat_id, f"<b>{titulo}</b>\n{SEM_TEXTO}", html_=True)
+            return
+        if len(blocos) > 1:
+            self.tg.enviar(chat_id, f"O texto é grande, então veio em {len(blocos)} partes. "
+                                    "Toque em cada bloco, na ordem, para copiar.")
+        for i, bloco in enumerate(blocos, 1):
+            sufixo = f" ({i}/{len(blocos)})" if len(blocos) > 1 else ""
+            self.tg.enviar(chat_id, f"<b>{titulo}{sufixo}</b>\n<pre>{html.escape(bloco)}</pre>", html_=True)
 
     # ------------------------------------------------------------- laço
     def rodar(self):
@@ -308,7 +403,7 @@ class Bot:
         offset = None
         while True:
             try:
-                params = {"timeout": 50, "allowed_updates": ["message"]}
+                params = {"timeout": 50, "allowed_updates": ["message", "callback_query"]}
                 if offset is not None:
                     params["offset"] = offset
                 updates = self.tg.chamar("getUpdates", _timeout=70, **params)
@@ -323,6 +418,40 @@ class Bot:
                     self.tratar(u)
                 except Exception:  # noqa: BLE001
                     log.exception("erro tratando update")
+
+
+def limpar_texto(texto):
+    """Tira as linhas de sujeira que o OCR pega nas bordas (só símbolos soltos) e
+    excesso de linhas em branco, para o texto copiado ficar limpo."""
+    linhas = []
+    for linha in texto.replace("\f", "").splitlines():
+        linha = linha.rstrip()
+        if linha and sum(c.isalnum() for c in linha) < 2:
+            continue
+        if not linha and (not linhas or not linhas[-1]):
+            continue
+        linhas.append(linha)
+    return "\n".join(linhas).strip()
+
+
+def dividir(texto, limite=BLOCO):
+    """Quebra o texto em blocos que cabem numa mensagem, sem cortar linhas no meio."""
+    blocos, atual = [], ""
+    for linha in texto.splitlines():
+        while len(linha) > limite:  # linha gigante (raro): corta à força
+            if atual:
+                blocos.append(atual)
+                atual = ""
+            blocos.append(linha[:limite])
+            linha = linha[limite:]
+        if len(atual) + len(linha) + 1 > limite:
+            blocos.append(atual)
+            atual = linha
+        else:
+            atual = f"{atual}\n{linha}" if atual else linha
+    if atual.strip():
+        blocos.append(atual)
+    return [b for b in blocos if b.strip()]
 
 
 def legenda(paginas, tamanho, puladas):
