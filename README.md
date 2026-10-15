@@ -8,7 +8,7 @@ Só ferramentas gratuitas: Python, OpenCV, Pillow, pypdf e Tesseract (português
 ## Como usar o bot
 
 1. Mande as fotos das páginas, em qualquer ordem. Pode ser em álbum ou como arquivo (📎 › Arquivo, fica com mais qualidade).
-2. Mande **pronto**, ou só espere 30 segundos.
+2. Mande **pronto**, ou só espere: 25 segundos depois da última foto ele começa sozinho.
 3. O bot responde com `prova_AAAA-MM-DD_HHMM.pdf` e `.txt`.
 4. Logo abaixo vem o botão **📋 Copiar todo o texto** (e um por página). O texto chega no chat em bloco: um toque copia tudo. Se a prova for longa e não couber numa mensagem (limite de 4.096 caracteres do Telegram), o texto vem **separado por questão, em ordem pela numeração**, em partes numeradas (ex.: “Parte 2/4 · Questões 11 a 20”). Nenhuma questão é cortada entre duas partes, e questão que começa numa página e termina na outra vem inteira. O botão funciona por 24 h (variável `TEXTO_HORAS`) ou até o bot reiniciar.
 
@@ -32,7 +32,7 @@ Variáveis opcionais:
 | Variável | Padrão | Para quê |
 |---|---|---|
 | `ALLOWED_CHAT_IDS` | (vazio = todos) | IDs de chat autorizados, separados por vírgula |
-| `JANELA_SEGUNDOS` | 30 | tempo sem foto nova para fechar o lote sozinho |
+| `JANELA_SEGUNDOS` | 25 | tempo sem foto nova para fechar o lote sozinho |
 | `MAX_PAGINAS` | 40 | páginas por PDF |
 | `DPI` | 200 | 150 = menor, 300 = mais nítido |
 | `QUALIDADE` | 70 | qualidade do JPEG dentro do PDF (50–85) |

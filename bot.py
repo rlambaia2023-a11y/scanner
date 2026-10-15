@@ -12,7 +12,7 @@ Funciona por long polling: não precisa de domínio, webhook nem banco de dados.
 Variáveis de ambiente:
   TELEGRAM_BOT_TOKEN   obrigatório (crie o bot com o @BotFather)
   ALLOWED_CHAT_IDS     opcional, IDs separados por vírgula (restringe quem usa)
-  JANELA_SEGUNDOS      opcional, padrão 30: fecha o lote sozinho após esse tempo sem fotos
+  JANELA_SEGUNDOS      opcional, padrão 25: fecha o lote sozinho após esse tempo sem fotos
   MAX_PAGINAS          opcional, padrão 40
   DPI, QUALIDADE       opcionais, padrão 200 e 70
 """
@@ -38,7 +38,7 @@ log = logging.getLogger("scanner-bot")
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 API = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
 ALLOWED = {int(x) for x in re.findall(r"-?\d+", os.environ.get("ALLOWED_CHAT_IDS", ""))}
-JANELA = int(os.environ.get("JANELA_SEGUNDOS", "30"))
+JANELA = int(os.environ.get("JANELA_SEGUNDOS", "25"))
 MAX_PAGINAS = int(os.environ.get("MAX_PAGINAS", "40"))
 DPI = int(os.environ.get("DPI", "200"))
 QUALIDADE = int(os.environ.get("QUALIDADE", "70"))
@@ -64,7 +64,8 @@ INICIO = (
     "• Depois do PDF aparece o botão 📋 Copiar texto: o texto vem aqui no chat, pronto para copiar.\n\n"
     "Comandos: /pronto, /cancelar, /cor, /pb, /ajuda"
 )
-PRIMEIRA_FOTO = "📄 Recebi. Pode mandar as outras páginas e depois “pronto”."
+PRIMEIRA_FOTO = (f"📄 Recebi. Pode mandar as outras páginas e depois “pronto”. "
+                 f"Se não chegar mais nada, em {JANELA} segundos eu começo sozinho.")
 SEM_FOTOS = "Ainda não recebi nenhuma foto. Manda as páginas da prova primeiro."
 CANCELADO = "Beleza, descartei as fotos desse lote. Pode mandar outras."
 NADA_PRA_CANCELAR = "Não tem nenhum lote em andamento."
