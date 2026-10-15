@@ -376,10 +376,38 @@ class Bot:
                 corpo = "\n\n".join(f"===== Página {n} =====\n{limpar_texto(t)}" for n, t in escolhidas)
             else:
                 corpo = limpar_texto(paginas[0])
+            if len(dividir(corpo)) > 1:
+                # não cabe numa mensagem: separa por questão, em ordem, sem cortar questão no meio
+                if self.mandar_por_questoes(chat_id, [t for _, t in escolhidas]):
+                    return
             self.mandar_blocos(chat_id, "Texto completo", corpo)
         else:
             n, texto = escolhidas[0]
             self.mandar_blocos(chat_id, f"Página {n}", limpar_texto(texto))
+
+    def mandar_por_questoes(self, chat_id, paginas):
+        """Devolve False se não achou questões (aí o chamador manda por blocos simples)."""
+        cabecalho, questoes = separar_questoes(paginas)
+        if len(questoes) < 2:
+            return False
+        partes = agrupar_questoes(questoes)
+        total = len(partes) + (1 if cabecalho else 0)
+        primeira, ultima = questoes[0][0], questoes[-1][0]
+        self.tg.enviar(chat_id, f"A prova é longa, então separei por questão ({primeira} a {ultima}, "
+                                f"em ordem) e mandei em {total} partes. Toque em cada bloco para copiar.")
+        n = 0
+        if cabecalho:
+            n += 1
+            self.tg.enviar(chat_id, f"<b>Parte {n}/{total} · Cabeçalho</b>\n<pre>{html.escape(cabecalho)}</pre>",
+                           html_=True)
+        for grupo in partes:
+            n += 1
+            nums = [q for q, _ in grupo]
+            faixa = f"Questão {nums[0]}" if len(nums) == 1 else f"Questões {nums[0]} a {nums[-1]}"
+            corpo = "\n\n".join(t for _, t in grupo)
+            self.tg.enviar(chat_id, f"<b>Parte {n}/{total} · {faixa}</b>\n<pre>{html.escape(corpo)}</pre>",
+                           html_=True)
+        return True
 
     def mandar_blocos(self, chat_id, titulo, texto):
         blocos = dividir(texto)
@@ -432,6 +460,64 @@ def limpar_texto(texto):
             continue
         linhas.append(linha)
     return "\n".join(linhas).strip()
+
+
+RE_INICIO_QUESTAO = re.compile(
+    r"^\W{0,3}(?:[^\W\d]\W{1,2})?(?:quest[ãa]o\s*)?(\d{1,3})\s*[-–—.)]\s*[A-ZÀ-Ú\"“(]", re.I)
+
+
+def separar_questoes(paginas):
+    """Junta as páginas (já na ordem) e corta o texto em questões.
+
+    Uma linha só abre questão se o número vier logo depois da anterior (até 5 à frente),
+    assim "90º", datas ou itens numerados dentro do enunciado não viram questão falsa.
+    Questão que começa numa página e termina na outra fica inteira.
+    Devolve (cabeçalho, [(número, texto), ...]) em ordem crescente de número."""
+    linhas = []  # (linha, é a 1ª questão possível da página?)
+    for t in paginas:
+        linhas += [(ln, i == 0) for i, ln in enumerate(limpar_texto(t).splitlines())]
+    cabecalho, questoes, atual, ultimo = [], {}, None, None
+    inicio_pagina = False
+    for linha, nova_pagina in linhas:
+        if nova_pagina:
+            inicio_pagina = True
+        m = RE_INICIO_QUESTAO.match(linha)
+        n = int(m.group(1)) if m else None
+        # no começo de cada página aceita um salto maior para frente (página do meio faltando);
+        # número menor que o anterior nunca abre questão ("1) item" dentro de um enunciado)
+        abre = n is not None and 0 < n < 200 and n not in questoes and (
+            ultimo is None or (ultimo < n and (inicio_pagina or n <= ultimo + 5)))
+        if abre:
+            inicio_pagina = False
+            atual, ultimo = n, n
+            questoes[n] = [linha[m.start(1):]]  # tira a sujeira antes do número
+        elif atual is None:
+            cabecalho.append(linha)
+        else:
+            questoes[atual].append(linha)
+    limpa = lambda ls: re.sub(r"\n{3,}", "\n\n", "\n".join(ls)).strip()
+    return limpa(cabecalho), [(n, limpa(questoes[n])) for n in sorted(questoes)]
+
+
+def agrupar_questoes(questoes, limite=BLOCO):
+    """Junta questões inteiras em partes que cabem numa mensagem.
+    Só divide uma questão se ela sozinha passar do limite."""
+    partes, atual, tamanho = [], [], 0
+    for n, texto in questoes:
+        pedacos = dividir(texto, limite) if len(texto) > limite else [texto]
+        for i, pedaco in enumerate(pedacos):
+            extra = len(pedaco) + 2
+            if atual and tamanho + extra > limite:
+                partes.append(atual)
+                atual, tamanho = [], 0
+            atual.append((n, pedaco))
+            tamanho += extra
+            if len(pedacos) > 1 and i < len(pedacos) - 1:  # questão gigante: cada pedaço em sua parte
+                partes.append(atual)
+                atual, tamanho = [], 0
+    if atual:
+        partes.append(atual)
+    return partes
 
 
 def dividir(texto, limite=BLOCO):
