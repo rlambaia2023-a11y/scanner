@@ -7,10 +7,21 @@ Só ferramentas gratuitas: Python, OpenCV, Pillow, pypdf e Tesseract (português
 
 ## Como usar o bot
 
-1. Mande as fotos das páginas, em qualquer ordem. Pode ser em álbum ou como arquivo (📎 › Arquivo, fica com mais qualidade).
-2. Mande **pronto**, ou só espere: 25 segundos depois da última foto ele começa sozinho.
-3. O bot responde com `prova_AAAA-MM-DD_HHMM.pdf` e `.txt`.
-4. Logo abaixo vem o botão **📋 Copiar todo o texto** (e um por página). O texto chega no chat em bloco: um toque copia tudo. Se a prova for longa e não couber numa mensagem (limite de 4.096 caracteres do Telegram), o texto vem **separado por questão, em ordem pela numeração**, em partes numeradas (ex.: “Parte 2/4 · Questões 11 a 20”). Nenhuma questão é cortada entre duas partes, e questão que começa numa página e termina na outra vem inteira. O botão funciona por 24 h (variável `TEXTO_HORAS`) ou até o bot reiniciar.
+1. Mande as fotos das páginas, em qualquer ordem e quantas quiser (até 40). Pode ser em álbum ou como arquivo (📎 › Arquivo, fica com mais qualidade).
+   Na primeira foto o bot mostra um contador (“📄 3 página(s) recebida(s)”) com os botões **✅ Pronto, gerar PDF** e **✖️ Cancelar**.
+2. Toque em **✅ Pronto** (ou mande “pronto”), ou só espere: 25 segundos depois da última foto ele começa sozinho.
+3. O bot responde com **um PDF com todas as páginas** (`prova_AAAA-MM-DD_HHMM.pdf`, na ordem certa e com texto pesquisável) e o `.txt` do OCR.
+4. Logo abaixo vêm as opções:
+   - **📋 Copiar todo o texto** (e 📋 1, 📋 2… por página): o texto chega no chat em bloco, um toque copia tudo. Se a prova for longa e não couber numa mensagem (limite de 4.096 caracteres do Telegram), o texto vem **separado por questão, em ordem pela numeração**, em partes numeradas (ex.: “Parte 2/4 · Questões 11 a 20”). Nenhuma questão é cortada entre duas partes, e questão que começa numa página e termina na outra vem inteira.
+   - **🖼️ Salvar páginas na galeria**: o bot manda as páginas já recortadas e limpas como fotos (em álbuns de até 10), na mesma ordem do PDF. Aí é só salvar no celular pela opção de salvar imagem do Telegram. O bot não consegue gravar direto na galeria do celular; isso o Telegram não permite.
+   - Os botões funcionam por 24 h (variável `TEXTO_HORAS`) ou até o bot reiniciar. O PDF e o .txt ficam no chat para sempre.
+
+### Qualidade do OCR
+
+O OCR (Tesseract, português) roda em cada página já recortada, endireitada e limpa. Depois, o texto passa por uma
+limpeza que usa a confiança de cada palavra para tirar a sujeira típica de foto (logotipo, carimbo, borda da folha,
+marcas soltas) sem mexer no texto da prova. Na foto de teste, a confiança média ficou em 93,5 e a limpeza tirou
+38 pedaços de lixo sem perder nenhuma palavra das questões.
 
 | Comando | O que faz |
 |---|---|

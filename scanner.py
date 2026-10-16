@@ -213,6 +213,47 @@ RE_QUESTAO = re.compile(r"^\W{0,3}(?:[^\W\d]\W{1,2})?(?:quest[ãa]o\s*)?(\d{1,3}
 PSM = "4"
 
 
+def texto_limpo(tsv):
+    """Monta o texto da página a partir do TSV do Tesseract, usando a confiança de cada
+    palavra para tirar a sujeira (logotipo, carimbo, borda da folha, marcas soltas):
+    - palavra com confiança < 30 sai;
+    - nas pontas da linha, sai palavra curta (até 2 letras/números) com confiança < 75
+      ou qualquer palavra com confiança < 50 — é onde a sujeira de margem aparece;
+    - linha sem nenhuma palavra confiável (>= 60) ou com menos de 2 letras/números sai.
+    O meio da linha não é mexido, para não perder palavra de verdade lida com dúvida."""
+    linhas, chave_ant = [], None
+    atual = []
+
+    def fecha():
+        ws = [w for w in atual if w[0] >= 30]
+        def ponta_ruim(w):
+            n = sum(ch.isalnum() for ch in w[1])
+            return (n <= 2 and w[0] < 75) or w[0] < 50
+        while ws and ponta_ruim(ws[0]):
+            ws.pop(0)
+        while ws and ponta_ruim(ws[-1]):
+            ws.pop()
+        frase = " ".join(w[1] for w in ws)
+        if ws and max(w[0] for w in ws) >= 60 and sum(ch.isalnum() for ch in frase) >= 2:
+            linhas.append(frase)
+
+    for linha in tsv.splitlines()[1:]:
+        c = linha.split("\t")
+        if len(c) != 12 or c[0] != "5" or not c[11].strip():
+            continue
+        bloco_par, chave = (c[2], c[3]), (c[2], c[3], c[4])
+        if chave != chave_ant:
+            if atual:
+                fecha()
+            if chave_ant and bloco_par != chave_ant[:2] and linhas and linhas[-1] != "":
+                linhas.append("")  # parágrafo novo
+            atual, chave_ant = [], chave
+        atual.append((float(c[10]), c[11].strip()))
+    if atual:
+        fecha()
+    return "\n".join(linhas).strip() + "\n"
+
+
 def chave_da_pagina(texto):
     """Devolve (tipo, número) que diz onde a página entra na prova:
     - número de página escrito ("Página 2", "2/4") se existir;
@@ -260,9 +301,11 @@ class ErroScanner(Exception):
 
 
 def processar(entradas, saida, dpi=200, qualidade=70, cor=False, ordenar_auto=True, usar_exif=True,
-              silencioso=False):
+              silencioso=False, pasta_imagens=None):
     """Gera o PDF e o .txt. ``usar_exif=False`` usa a ordem dos nomes dos arquivos como base
-    (o bot nomeia as fotos pela ordem de envio). Devolve a lista de páginas na ordem final."""
+    (o bot nomeia as fotos pela ordem de envio). Com ``pasta_imagens``, as páginas tratadas
+    (recortadas e limpas) são salvas lá como pagina_01.jpg, pagina_02.jpg... na ordem final.
+    Devolve a lista de páginas na ordem final."""
     if not shutil.which("tesseract"):
         raise ErroScanner("Tesseract não encontrado. Veja o LEIAME.md para instalar.")
     arquivos = listar_imagens(entradas)
@@ -295,11 +338,11 @@ def processar(entradas, saida, dpi=200, qualidade=70, cor=False, ordenar_auto=Tr
         # está, sem recomprimir, com o texto invisível por cima) e o .txt
         saida_pg = os.path.join(tmp, f"p{i:03d}")
         subprocess.run(["tesseract", jpg, saida_pg, "-l", "por", "--psm", PSM,
-                        "--dpi", str(dpi), "pdf", "txt"], check=True, capture_output=True)
-        with open(saida_pg + ".txt", encoding="utf-8") as f:
-            texto = f.read()
+                        "--dpi", str(dpi), "pdf", "tsv"], check=True, capture_output=True)
+        with open(saida_pg + ".tsv", encoding="utf-8") as f:
+            texto = texto_limpo(f.read())
         chave = chave_da_pagina(texto) if ordenar_auto else None
-        paginas.append({"nome": os.path.basename(arq), "data": data, "pdf": saida_pg + ".pdf",
+        paginas.append({"nome": os.path.basename(arq), "data": data, "pdf": saida_pg + ".pdf", "jpg": jpg,
                         "texto": texto, "chave": chave, "recorte": recorte})
         log(f"  [{i + 1}/{len(arquivos)}] {os.path.basename(arq)}: recorte {recorte}; "
               f"pista de ordem = {chave}")
@@ -318,6 +361,11 @@ def processar(entradas, saida, dpi=200, qualidade=70, cor=False, ordenar_auto=Tr
         pass
     with open(saida, "wb") as f:
         pdf.write(f)
+
+    if pasta_imagens:
+        os.makedirs(pasta_imagens, exist_ok=True)
+        for n, p in enumerate(paginas, 1):
+            shutil.copyfile(p["jpg"], os.path.join(pasta_imagens, f"pagina_{n:02d}.jpg"))
 
     # texto separado por página, mais fácil de usar na correção
     base = os.path.splitext(saida)[0]

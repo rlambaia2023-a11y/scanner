@@ -17,6 +17,7 @@ Variáveis de ambiente:
   DPI, QUALIDADE       opcionais, padrão 200 e 70
 """
 import html
+import json
 import logging
 import os
 import queue
@@ -45,6 +46,8 @@ QUALIDADE = int(os.environ.get("QUALIDADE", "70"))
 MAX_ARQUIVO = 20 * 1024 * 1024  # limite de download de arquivos de bots no Telegram
 TEXTO_HORAS = int(os.environ.get("TEXTO_HORAS", "24"))  # por quanto tempo o botão de copiar funciona
 MAX_TEXTOS = 200  # resultados guardados em memória para o botão de copiar
+MAX_GALERIAS = 30  # resultados cujas páginas tratadas ficam guardadas em disco para a galeria
+CACHE = os.path.join(tempfile.gettempdir(), "scanner_cache")  # páginas tratadas, para a galeria
 BLOCO = 3000      # caracteres por mensagem (folga para o escape do HTML; limite do Telegram é 4096)
 
 PRONTO = {"pronto", "pronta", "/pronto", "/pdf", "pdf", "terminei", "fim", "ok pronto"}
@@ -61,11 +64,12 @@ INICIO = (
     "• Folha inteira na foto, com um pouco de fundo aparecendo em volta.\n"
     "• Mandando como arquivo (📎 › Arquivo) a qualidade fica melhor.\n"
     "• Correção com caneta colorida? Manda /cor antes das fotos.\n"
-    "• Depois do PDF aparece o botão 📋 Copiar texto: o texto vem aqui no chat, pronto para copiar.\n\n"
+    "• Pode mandar quantas páginas quiser (até 40): todas viram um PDF só.\n"
+    "• Depois do PDF dá para copiar o texto e salvar as páginas tratadas na galeria.\n\n"
     "Comandos: /pronto, /cancelar, /cor, /pb, /ajuda"
 )
-PRIMEIRA_FOTO = (f"📄 Recebi. Pode mandar as outras páginas e depois “pronto”. "
-                 f"Se não chegar mais nada, em {JANELA} segundos eu começo sozinho.")
+TECLADO_COLETA = [[{"text": "✅ Pronto, gerar PDF", "callback_data": "fim"},
+                   {"text": "✖️ Cancelar", "callback_data": "cancel"}]]
 SEM_FOTOS = "Ainda não recebi nenhuma foto. Manda as páginas da prova primeiro."
 CANCELADO = "Beleza, descartei as fotos desse lote. Pode mandar outras."
 NADA_PRA_CANCELAR = "Não tem nenhum lote em andamento."
@@ -75,11 +79,28 @@ LIMITE = f"Chegou no limite de {MAX_PAGINAS} páginas por PDF. Manda “pronto�
 ERRO = ("😕 Não consegui montar o PDF dessa vez. Tenta mandar as fotos de novo daqui a pouco. "
         "Se continuar, manda como arquivo (📎 › Arquivo).")
 NAO_AUTORIZADO = "Este bot é de uso restrito."
-COPIAR_CONVITE = ("📋 Quer copiar o texto? Toque em “Copiar todo o texto” e eu mando aqui embaixo. "
-                  "Depois é só tocar no bloco que ele copia inteiro.")
+OPCOES = ("O que mais você quer fazer com essa prova?\n"
+          "📋 Copiar o texto: mando aqui no chat, é só tocar no bloco para copiar.\n"
+          "🖼️ Salvar na galeria: mando as páginas já tratadas como fotos.\n\n"
+          "O PDF acima já tem todas as páginas juntas. Para guardar no celular, toque nele e use "
+          "Compartilhar › Salvar em Arquivos.")
+GALERIA_DICA = ("🖼️ Aí estão as páginas tratadas. Para salvar na galeria, abra a foto e use a opção de salvar "
+                "(no iPhone: compartilhar › Salvar Imagem; no Android: menu ⋮ › Salvar na galeria).")
+GALERIA_EXPIROU = ("As imagens dessa prova não estão mais guardadas (passou do prazo ou o bot reiniciou). "
+                   "O PDF continua no chat com todas as páginas; se quiser as fotos, manda as páginas de novo.")
+LOTE_JA_ENVIADO = "Esse lote já foi enviado"
 TEXTO_EXPIROU = ("Esse texto não está mais guardado (passou do prazo ou o bot reiniciou). "
                  "Abre o .txt que mandei junto com o PDF, ou manda as fotos de novo.")
 SEM_TEXTO = "Não encontrei texto nessa página. Pode ser que a foto esteja escura ou tremida."
+
+
+def msg_recebidas(n):
+    return (f"📄 {n} página(s) recebida(s). Pode mandar mais páginas ou tocar em ✅ Pronto. "
+            f"Se não chegar mais nada, em {JANELA} segundos eu começo sozinho.")
+
+
+def msg_fechado(n):
+    return f"📄 {n} página(s) recebida(s). Começando o PDF…"
 
 
 def msg_processando(n, fila):
@@ -130,9 +151,35 @@ class Telegram:
         if html_:
             params["parse_mode"] = "HTML"
         try:
-            self.chamar("sendMessage", **params)
+            return self.chamar("sendMessage", **params)
         except RuntimeError as e:
             log.error("não consegui enviar mensagem: %s", e)
+            return None
+
+    def editar(self, chat_id, msg_id, texto, teclado=None):
+        params = {"chat_id": chat_id, "message_id": msg_id, "text": texto[:4096]}
+        if teclado:
+            params["reply_markup"] = {"inline_keyboard": teclado}
+        try:
+            self.chamar("editMessageText", **params)
+        except RuntimeError as e:
+            if "not modified" not in str(e):
+                log.warning("não consegui editar mensagem: %s", e)
+
+    def enviar_album(self, chat_id, fotos):
+        """fotos: [(nome, bytes, legenda)]. Manda em álbuns de até 10 (limite do Telegram)."""
+        for i in range(0, len(fotos), 10):
+            grupo = fotos[i:i + 10]
+            if len(grupo) == 1:
+                nome, dados, legenda = grupo[0]
+                self.chamar("sendPhoto", _timeout=120, files={"photo": (nome, dados, "image/jpeg")},
+                            chat_id=str(chat_id), caption=legenda)
+                continue
+            media = [{"type": "photo", "media": f"attach://f{j}", "caption": leg}
+                     for j, (_, _, leg) in enumerate(grupo)]
+            files = {f"f{j}": (nome, dados, "image/jpeg") for j, (nome, dados, _) in enumerate(grupo)}
+            self.chamar("sendMediaGroup", _timeout=180, files=files, chat_id=str(chat_id),
+                        media=json.dumps(media))
 
     def responder_botao(self, callback_id, texto=None):
         params = {"callback_query_id": callback_id}
@@ -179,6 +226,8 @@ class Lote:
     fotos: list = field(default_factory=list)  # file_id na ordem de envio
     ultimo: float = 0.0
     cor: bool = False
+    msg_id: int | None = None  # mensagem "N página(s) recebida(s)", atualizada a cada foto
+    mostrado: int = 0
 
 
 class Bot:
@@ -235,6 +284,8 @@ class Bot:
         elif cmd in CANCELAR:
             with self.trava:
                 lote = self.lotes.pop(chat_id, None)
+            if lote and lote.msg_id:
+                self.tg.editar(chat_id, lote.msg_id, "✖️ " + CANCELADO)
             self.tg.enviar(chat_id, CANCELADO if lote else NADA_PRA_CANCELAR)
         elif cmd in {"/cor", "/pb"}:
             ligada = cmd == "/cor"
@@ -261,26 +312,42 @@ class Bot:
         if cheio:
             self.tg.enviar(chat_id, LIMITE)
         elif primeira:
-            self.tg.enviar(chat_id, PRIMEIRA_FOTO)
+            res = self.tg.enviar(chat_id, msg_recebidas(1), teclado=TECLADO_COLETA)
+            with self.trava:
+                lote.msg_id, lote.mostrado = (res or {}).get("message_id"), 1
 
     def fechar(self, chat_id):
         with self.trava:
             lote = self.lotes.pop(chat_id, None)
         if not lote or not lote.fotos:
             return False
+        if lote.msg_id:  # tira os botões para não fecharem o lote duas vezes
+            self.tg.editar(chat_id, lote.msg_id, msg_fechado(len(lote.fotos)))
         self.tg.enviar(chat_id, msg_processando(len(lote.fotos), self.fila.qsize()))
         self.fila.put((chat_id, lote))
         return True
 
     def vigiar_janelas(self):
-        """Fecha sozinho os lotes que ficaram JANELA segundos sem foto nova."""
+        """Atualiza o contador de páginas, fecha sozinho os lotes que ficaram JANELA segundos
+        sem foto nova e apaga os resultados vencidos."""
+        ultima_limpeza = time.monotonic()
         while True:
             time.sleep(2)
             agora = time.monotonic()
             with self.trava:
                 vencidos = [c for c, l in self.lotes.items() if l.fotos and agora - l.ultimo >= JANELA]
+                contadores = []
+                for c, l in self.lotes.items():
+                    if l.msg_id and c not in vencidos and len(l.fotos) != l.mostrado:
+                        l.mostrado = len(l.fotos)
+                        contadores.append((c, l.msg_id, l.mostrado))
+            for chat_id, msg_id, n in contadores:
+                self.tg.editar(chat_id, msg_id, msg_recebidas(n), teclado=TECLADO_COLETA)
             for chat_id in vencidos:
                 self.fechar(chat_id)
+            if agora - ultima_limpeza > 600:
+                ultima_limpeza = agora
+                self.limpar_resultados()
 
     # ---------------------------------------------------------- trabalho
     def trabalhar(self):
@@ -312,8 +379,10 @@ class Bot:
 
             inicio = time.monotonic()
             saida = os.path.join(pasta, "prova.pdf")
+            tid = uuid.uuid4().hex[:10]
+            pasta_galeria = os.path.join(CACHE, tid)
             paginas = scanner.processar(fotos, saida, dpi=DPI, qualidade=QUALIDADE, cor=lote.cor,
-                                        usar_exif=False, silencioso=True)
+                                        usar_exif=False, silencioso=True, pasta_imagens=pasta_galeria)
             with open(saida, "rb") as f:
                 pdf = f.read()
             with open(os.path.join(pasta, "prova.txt"), "rb") as f:
@@ -325,40 +394,100 @@ class Bot:
             self.tg.enviar_arquivo(chat_id, f"{nome}.pdf", pdf, "application/pdf",
                                    legenda=legenda(paginas, len(pdf), puladas))
             self.tg.enviar_arquivo(chat_id, f"{nome}.txt", txt, "text/plain")
-            self.oferecer_copia(chat_id, [p["texto"] for p in paginas])
+            self.oferecer_opcoes(chat_id, tid, [p["texto"] for p in paginas], pasta_galeria)
         finally:
             tempfile.tempdir = antigo_tmp
             shutil.rmtree(pasta, ignore_errors=True)
 
     # ------------------------------------------------------- copiar texto
-    def guardar_texto(self, chat_id, paginas):
-        tid = uuid.uuid4().hex[:10]
+    def guardar_resultado(self, tid, chat_id, paginas, pasta):
+        apagar = []
         with self.trava:
-            self.textos[tid] = {"chat": chat_id, "paginas": paginas, "quando": time.monotonic()}
+            self.textos[tid] = {"chat": chat_id, "paginas": paginas, "pasta": pasta, "quando": time.monotonic()}
             while len(self.textos) > MAX_TEXTOS:
-                self.textos.popitem(last=False)
-        return tid
+                apagar.append(self.textos.popitem(last=False)[1].get("pasta"))
+            com_imagens = [v for v in self.textos.values() if v.get("pasta")]
+            for v in com_imagens[:max(0, len(com_imagens) - MAX_GALERIAS)]:
+                apagar.append(v["pasta"])
+                v["pasta"] = None
+        for pasta in apagar:
+            if pasta:
+                shutil.rmtree(pasta, ignore_errors=True)
 
-    def oferecer_copia(self, chat_id, paginas):
-        tid = self.guardar_texto(chat_id, paginas)
-        teclado = [[{"text": "📋 Copiar todo o texto", "callback_data": f"cp:{tid}:all"}]]
+    def limpar_resultados(self):
+        limite = TEXTO_HORAS * 3600
+        with self.trava:
+            velhos = [t for t, v in self.textos.items() if time.monotonic() - v["quando"] > limite]
+            pastas = [self.textos.pop(t).get("pasta") for t in velhos]
+        for pasta in pastas:
+            if pasta:
+                shutil.rmtree(pasta, ignore_errors=True)
+
+    def oferecer_opcoes(self, chat_id, tid, paginas, pasta):
+        self.guardar_resultado(tid, chat_id, paginas, pasta)
+        teclado = [[{"text": "📋 Copiar todo o texto", "callback_data": f"cp:{tid}:all"}],
+                   [{"text": "🖼️ Salvar páginas na galeria", "callback_data": f"gl:{tid}"}]]
         if len(paginas) > 1:
-            botoes = [{"text": f"Pág. {i}", "callback_data": f"cp:{tid}:{i}"}
+            botoes = [{"text": f"📋 {i}", "callback_data": f"cp:{tid}:{i}"}
                       for i in range(1, min(len(paginas), 40) + 1)]
             teclado += [botoes[i:i + 5] for i in range(0, len(botoes), 5)]
-        self.tg.enviar(chat_id, COPIAR_CONVITE, teclado=teclado)
+        self.tg.enviar(chat_id, OPCOES, teclado=teclado)
+
+    def buscar_resultado(self, tid, chat_id):
+        with self.trava:
+            item = self.textos.get(tid)
+        if not item or item["chat"] != chat_id or time.monotonic() - item["quando"] > TEXTO_HORAS * 3600:
+            return None
+        return item
+
+    def tratar_galeria(self, cb, chat_id, tid):
+        item = self.buscar_resultado(tid, chat_id)
+        pasta = item and item.get("pasta")
+        if not pasta or not os.path.isdir(pasta):
+            self.tg.responder_botao(cb["id"], "Essas imagens expiraram")
+            self.tg.enviar(chat_id, GALERIA_EXPIROU)
+            return
+        self.tg.responder_botao(cb["id"], "Enviando as páginas…")
+        nomes = sorted(n for n in os.listdir(pasta) if n.endswith(".jpg"))
+        fotos = []
+        for i, nome in enumerate(nomes, 1):
+            with open(os.path.join(pasta, nome), "rb") as f:
+                fotos.append((nome, f.read(), f"Página {i} de {len(nomes)}"))
+        try:
+            self.tg.enviar_album(chat_id, fotos)
+        except RuntimeError as e:
+            log.error("falha ao mandar a galeria: %s", e)
+            self.tg.enviar(chat_id, ERRO)
+            return
+        self.tg.enviar(chat_id, GALERIA_DICA)
 
     def tratar_botao(self, cb):
         chat_id = (cb.get("message") or {}).get("chat", {}).get("id")
-        partes = (cb.get("data") or "").split(":")
-        if chat_id is None or len(partes) != 3 or partes[0] != "cp":
+        dado = cb.get("data") or ""
+        if chat_id is None or (ALLOWED and chat_id not in ALLOWED):
+            self.tg.responder_botao(cb["id"])
+            return
+        if dado == "fim":
+            ok = self.fechar(chat_id)
+            self.tg.responder_botao(cb["id"], None if ok else LOTE_JA_ENVIADO)
+            return
+        if dado == "cancel":
+            with self.trava:
+                lote = self.lotes.pop(chat_id, None)
+            self.tg.responder_botao(cb["id"], None if lote else LOTE_JA_ENVIADO)
+            if lote and lote.msg_id:
+                self.tg.editar(chat_id, lote.msg_id, "✖️ " + CANCELADO)
+            return
+        partes = dado.split(":")
+        if len(partes) == 2 and partes[0] == "gl":
+            self.tratar_galeria(cb, chat_id, partes[1])
+            return
+        if len(partes) != 3 or partes[0] != "cp":
             self.tg.responder_botao(cb["id"])
             return
         _, tid, qual = partes
-        with self.trava:
-            item = self.textos.get(tid)
-        vencido = item and time.monotonic() - item["quando"] > TEXTO_HORAS * 3600
-        if not item or vencido or item["chat"] != chat_id:
+        item = self.buscar_resultado(tid, chat_id)
+        if not item:
             self.tg.responder_botao(cb["id"], "Esse texto expirou")
             self.tg.enviar(chat_id, TEXTO_EXPIROU)
             return
@@ -424,6 +553,8 @@ class Bot:
 
     # ------------------------------------------------------------- laço
     def rodar(self):
+        shutil.rmtree(CACHE, ignore_errors=True)
+        os.makedirs(CACHE, exist_ok=True)
         threading.Thread(target=self.vigiar_janelas, daemon=True).start()
         threading.Thread(target=self.trabalhar, daemon=True).start()
         self.tg.chamar("deleteWebhook")  # long polling não convive com webhook
