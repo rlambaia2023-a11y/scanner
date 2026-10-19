@@ -335,12 +335,12 @@ class Bot:
             time.sleep(2)
             agora = time.monotonic()
             with self.trava:
-                vencidos = [c for c, l in self.lotes.items() if l.fotos and agora - l.ultimo >= JANELA]
+                vencidos = [c for c, lote in self.lotes.items() if lote.fotos and agora - lote.ultimo >= JANELA]
                 contadores = []
-                for c, l in self.lotes.items():
-                    if l.msg_id and c not in vencidos and len(l.fotos) != l.mostrado:
-                        l.mostrado = len(l.fotos)
-                        contadores.append((c, l.msg_id, l.mostrado))
+                for c, lote in self.lotes.items():
+                    if lote.msg_id and c not in vencidos and len(lote.fotos) != lote.mostrado:
+                        lote.mostrado = len(lote.fotos)
+                        contadores.append((c, lote.msg_id, lote.mostrado))
             for chat_id, msg_id, n in contadores:
                 self.tg.editar(chat_id, msg_id, msg_recebidas(n), teclado=TECLADO_COLETA)
             for chat_id in vencidos:
@@ -627,7 +627,9 @@ def separar_questoes(paginas):
             cabecalho.append(linha)
         else:
             questoes[atual].append(linha)
-    limpa = lambda ls: re.sub(r"\n{3,}", "\n\n", "\n".join(ls)).strip()
+    def limpa(ls):
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(ls)).strip()
+
     return limpa(cabecalho), [(n, limpa(questoes[n])) for n in sorted(questoes)]
 
 

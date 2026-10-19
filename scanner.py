@@ -55,7 +55,7 @@ def abrir_imagem(caminho):
             import pillow_heif
             pillow_heif.register_heif_opener()
         except ImportError:
-            raise ErroScanner("Para fotos .heic do iPhone: pip install pillow-heif")
+            raise ErroScanner("Para fotos .heic do iPhone: pip install pillow-heif") from None
     img = Image.open(caminho)
     data = None
     try:
@@ -63,7 +63,7 @@ def abrir_imagem(caminho):
         bruto = exif.get_ifd(0x8769).get(36867) or exif.get(306)
         if bruto:
             data = datetime.strptime(str(bruto), "%Y:%m:%d %H:%M:%S")
-    except Exception:
+    except Exception:  # noqa: BLE001 - EXIF quebrado tem mil formas; sem data, a ordem usa o nome
         pass
     img = ImageOps.exif_transpose(img).convert("RGB")
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR), data
@@ -258,13 +258,18 @@ def chave_da_pagina(texto):
     """Devolve (tipo, número) que diz onde a página entra na prova:
     - número de página escrito ("Página 2", "2/4") se existir;
     - senão, a primeira questão que abre linha, considerando só números que
-      formam sequência (3, 4, 5...) — "90º" ou um ano solto não atrapalham;
+      formam sequência (3, 4, 5...) — "90º" ou um ano solto não atrapalham.
+      A sequência tolera um número que o OCR não leu (3, 5, 6: o "4-" sublinhado
+      some com frequência), senão a primeira questão seria descartada;
     - senão, ("capa", 0) se for a folha com nome/matrícula/assinatura."""
     m = RE_PAGINA.search(texto)
     if m:
         return ("pagina", int(m.group(1) or m.group(2)))
     nums = sorted({int(n) for n in RE_QUESTAO.findall(texto) if 0 < int(n) < 200})
-    em_sequencia = [n for n in nums if n + 1 in nums or n - 1 in nums]
+    corrida = {n for n in nums if n + 1 in nums or n - 1 in nums}
+    # o salto de 2 só vale encostado numa sequência de verdade (3 antes de 5, 6, 7);
+    # itens "1." e "3." soltos dentro de um enunciado não viram primeira questão
+    em_sequencia = sorted(corrida | {n for n in nums if n + 2 in corrida or n - 2 in corrida})
     if em_sequencia or nums:
         return ("questao", (em_sequencia or nums)[0])
     if re.search(r"matr[íi]cula|aluno\(a\)|assinatura", texto, re.I):
@@ -313,8 +318,16 @@ def processar(entradas, saida, dpi=200, qualidade=70, cor=False, ordenar_auto=Tr
         raise ErroScanner("Nenhuma imagem encontrada.")
     log = (lambda *a, **k: None) if silencioso else print
 
-    largura = int(round(210 / 25.4 * dpi))  # largura A4 na resolução pedida
     tmp = tempfile.mkdtemp(prefix="scan_")
+    try:  # a pasta temporária sai sempre, mesmo se o OCR ou o PDF falharem no meio
+        return _montar(arquivos, saida, dpi, qualidade, cor, ordenar_auto, usar_exif, log,
+                       pasta_imagens, tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _montar(arquivos, saida, dpi, qualidade, cor, ordenar_auto, usar_exif, log, pasta_imagens, tmp):
+    largura = int(round(210 / 25.4 * dpi))  # largura A4 na resolução pedida
     paginas = []
 
     for i, arq in enumerate(arquivos):
@@ -373,7 +386,6 @@ def processar(entradas, saida, dpi=200, qualidade=70, cor=False, ordenar_auto=Tr
         for n, p in enumerate(paginas, 1):
             f.write(f"===== Página {n} ({p['nome']}) =====\n{p['texto'].strip()}\n\n")
 
-    shutil.rmtree(tmp, ignore_errors=True)
     kb = os.path.getsize(saida) / 1024
     log(f"\nOrdem final: {[p['nome'] for p in paginas]}")
     log(f"PDF: {saida} ({kb:.0f} KB, {len(paginas)} pág.)  |  Texto: {base}.txt")

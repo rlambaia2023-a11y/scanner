@@ -59,9 +59,20 @@ python scanner.py pasta_das_fotos -o prova.pdf            # linha de comando
 TELEGRAM_BOT_TOKEN=... python bot.py                        # bot
 ```
 
+## Desenvolvimento
+
+```
+pip install -r requirements-dev.txt
+ruff check . && pytest -q
+```
+
+Os testes usam uma foto real de prova (`tests/fixtures/`) e precisam do Tesseract com português.
+Detalhes em `AGENTS.md`, `PRODUCT.md` e na pasta `docs/`.
+
 ## Arquivos
 
 - `scanner.py` — recorte da folha, correção de perspectiva, limpeza, ordem das páginas, PDF + OCR
 - `bot.py` — bot do Telegram
 - `Dockerfile`, `railway.json`, `requirements.txt` — deploy
 - `exemplo_prova.pdf` / `.txt` — exemplo gerado a partir de uma foto real
+- `tests/`, `pyproject.toml`, `requirements-dev.txt`, `.github/workflows/` — testes, lint e CI
